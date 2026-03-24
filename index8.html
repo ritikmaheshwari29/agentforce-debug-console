@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta charset="UTF-8">
+<title>Agentforce Advanced Debug Console</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+
+body{
+font-family:Arial;
+background:#f4f6f9;
+margin:0;
+display:flex;
+}
+
+/* LEFT MAIN */
+.main{
+flex:3;
+padding:40px;
+}
+
+h1{
+color:#16325c;
+}
+
+select,input,button{
+padding:10px;
+margin:10px 5px;
+}
+
+button{
+background:#0176d3;
+color:white;
+border:none;
+cursor:pointer;
+}
+
+.section{
+background:white;
+padding:20px;
+margin-top:25px;
+border-left:6px solid #0176d3;
+}
+
+.good{color:green}
+.bad{color:red;font-weight:bold}
+.system{color:#777}
+
+hr{margin:15px 0}
+
+.small{font-size:13px;color:#555}
+
+/* RIGHT PANEL */
+.side{
+flex:1;
+background:white;
+padding:25px;
+border-left:2px solid #ddd;
+position:sticky;
+top:0;
+height:100vh;
+overflow:auto;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<!-- MAIN -->
+<div class="main">
+
+<h1>Agentforce Advanced Debug Console</h1>
+
+<input type="file" id="zipFile" accept=".zip" onchange="loadAgents()">
+
+<select id="agentSelector">
+<option>Select Agent</option>
+</select>
+
+<button onclick="analyze()">Analyze Agent</button>
+
+<div id="results"></div>
+
+</div>
+
+<!-- RIGHT PANEL -->
+<div class="side">
+
+<h2>📦 Package File</h2>
+
+<p class="small">
+Upload a Zip file
+</p>
+
+<hr>
+
+<h3>Included</h3>
+
+<ul class="small">
+<li>GenAiPlannerBundle</li>
+<li>GenAiFunction</li>
+<li>Flow</li>
+<li>GenAiPlugin</li>
+<li>Bot / BotVersion</li>
+<li>AiAuthoringBundle</li>
+</ul>
+
+<hr>
+
+<div class="section">
+<h2>Topic → Action Mapping</h2>
+
+<p class="small">
+Defines the relationship in the GenAI Planner Bundle that links a Topic (user intent) to an Action that should be executed when that Topic is triggered.
+</p>
+
+</div>
+
+</div>
+
+<script>
+
+let zipData = null;
+
+const systemActions = [
+"AnswerQuestionsWithKnowledge",
+"VerifyCustomer",
+"SendEmailVerificationCode",
+"ResetSecurePassword",
+"GetOrdersByContact",
+"GetOrderByOrderNumber",
+"CancelOrder",
+"IdentifyCustomerByEmail",
+"FinalizeReservation",
+"GetReservationTimeSlots",
+"AddCaseComment",
+"GetCasesForVerifiedContact",
+"FinalizeNewDeliveryTime",
+"GetDeliveryTimeSlots",
+"UpdateVerifiedContact",
+"CreateCaseEnhancedData",
+"GetCaseByVerifiedCaseNumber"
+];
+
+function normalize(name){
+return name.replace(/_[0-9A-Za-z]{15,18}$/,"");
+}
+
+/* LOAD ZIP */
+async function loadAgents(){
+
+const file = document.getElementById("zipFile").files[0];
+
+zipData = await JSZip.loadAsync(file);
+
+const selector = document.getElementById("agentSelector");
+selector.innerHTML = "";
+
+let agents = new Set();
+
+for(const path in zipData.files){
+if(path.startsWith("genAiPlannerBundles/")){
+agents.add(path.split("/")[1]);
+}
+}
+
+agents.forEach(a=>{
+let opt = document.createElement("option");
+opt.value = a;
+opt.textContent = a;
+selector.appendChild(opt);
+});
+
+}
+
+/* ANALYZE */
+async function analyze(){
+
+const agent = document.getElementById("agentSelector").value;
+
+if(!agent){
+alert("Select agent");
+return;
+}
+
+let functions = {};
+let flows = [];
+let plannerActions = [];
+
+/* PARSE ZIP */
+for(const path in zipData.files){
+
+if(path.includes("genAiFunctions") &&
+path.endsWith(".genAiFunction-meta.xml")){
+
+functions[path.split("/")[1]] = {};
+}
+
+if(path.startsWith("flows/") &&
+path.endsWith(".flow-meta.xml")){
+
+flows.push(path.split("/")[1].replace(".flow-meta.xml",""));
+}
+
+if(!path.includes("genAiPlannerBundles/"+agent)) continue;
+
+if(path.includes("localActions") &&
+path.includes("schema.json")){
+
+plannerActions.push({
+topic: path.split("/")[3],
+action: normalize(path.split("/")[4])
+});
+
+}
+
+}
+
+/* REMOVE DUPLICATES */
+let map = new Map();
+
+plannerActions.forEach(a=>{
+map.set(a.topic+"||"+a.action,a);
+});
+
+let unique = Array.from(map.values());
+
+/* RENDER */
+let html = "";
+
+/* CUSTOM FUNCTIONS */
+html += `<div class="section">
+<h2>Gen AI Functions</h2>`;
+
+for(const f in functions){
+html += `<div class="good">${f}</div>`;
+}
+
+html += `</div>`;
+
+/* MAPPING */
+html += `<div class="section">
+<h2>Topic → Action Mapping</h2>`;
+
+unique.forEach(a=>{
+
+let status="good";
+let msg="Custom Function";
+
+if(systemActions.includes(a.action)){
+status="system";
+msg="System Action";
+}
+else if(functions[a.action]){
+status="good";
+msg="Custom Function";
+}
+else if(flows.includes(a.action)){
+status="good";
+msg="Flow Action";
+}
+else{
+status="bad";
+msg="Missing Implementation";
+}
+
+html += `<div class="${status}">
+${a.topic} → ${a.action} [${msg}]
+</div>`;
+
+});
+
+html += `</div>`;
+
+/* BROKEN ACTIONS (FIXED COLOR SPLIT) */
+html += `<div class="section">
+<h2>Broken Actions</h2>`;
+
+unique.forEach(a=>{
+if(
+!systemActions.includes(a.action) &&
+!functions[a.action] &&
+!flows.includes(a.action)
+){
+html += `
+<div>
+<span class="bad">🚨 ${a.action}</span>
+<span class="system"> is not resolved</span>
+</div>
+`;
+}
+});
+
+html += `</div>`;
+
+/* HEALTH SCORE */
+let issues = 0;
+
+unique.forEach(a=>{
+if(
+!systemActions.includes(a.action) &&
+!functions[a.action] &&
+!flows.includes(a.action)
+){
+issues++;
+}
+});
+
+let score = Math.max(0,100-(issues*10));
+
+html += `<div class="section">
+<h2>Agent Health Score</h2>
+<div class="good">${score}%</div>
+</div>`;
+
+document.getElementById("results").innerHTML = html;
+
+}
+
+</script>
+
+</body>
+</html>
